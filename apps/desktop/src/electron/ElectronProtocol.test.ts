@@ -28,6 +28,11 @@ describe("ElectronProtocol", () => {
     unhandleMock.mockReset();
   });
 
+  it("keeps renderer and callback schemes separate from the official app", () => {
+    assert.equal(ElectronProtocol.getDesktopUrl(false), "t3code-radar://app/");
+    assert.equal(ElectronProtocol.getDesktopUrl(true), "t3code-radar-dev://app/");
+  });
+
   it.effect("serves the bundled client from disk without a backend", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
