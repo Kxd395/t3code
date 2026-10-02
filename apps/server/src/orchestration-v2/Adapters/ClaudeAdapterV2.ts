@@ -2609,6 +2609,10 @@ interface ClaudeLiveQueryContext {
   promptEchoMode: "unknown" | "acknowledged" | "early" | "result_only";
   // Stop, rollback or fork is closing this process; its work is ending.
   stopping: boolean;
+  // Registry entries still running when this process opened. Their process
+  // is gone and never reports their end; any later task_started replaces the
+  // entry, so an entry still in this set runs nowhere.
+  readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
 }
 
 interface ActiveClaudeToolCall {
@@ -6655,19 +6659,22 @@ export function makeClaudeAdapterV2(
 
         // Work the live process still runs. A subagent whose completion is
         // already buffered is done: the buffer outlives the process.
-        const liveProcessRunsBackgroundWork = Effect.fnUntraced(function* (nativeThreadId: string) {
+        const liveProcessRunsBackgroundWork = Effect.fnUntraced(function* (
+          live: ClaudeLiveQueryContext,
+        ) {
           if (
             rosterForNativeThread(
               yield* Ref.get(pendingBackgroundTasksByNativeThread),
-              nativeThreadId,
+              live.nativeThreadId,
             ).size > 0
           ) {
             return true;
           }
-          const buffered = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
+          const buffered = (yield* Ref.get(wakeBuffers)).get(live.nativeThreadId)?.messages ?? [];
           for (const [taskId, subagent] of yield* Ref.get(sessionSubagentsByTaskId)) {
             if (
               subagent.task.status === "running" &&
+              !live.subagentsFromEarlierProcesses.has(subagent) &&
               !buffered.some(
                 (message) =>
                   message.type === "system" &&
@@ -6719,7 +6726,7 @@ export function makeClaudeAdapterV2(
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
             !existing.stopping &&
-            (yield* liveProcessRunsBackgroundWork(nativeThreadId))
+            (yield* liveProcessRunsBackgroundWork(existing))
           ) {
             return yield* new ClaudeBackgroundWorkBlocksQueryReplacementError();
           }
@@ -6821,6 +6828,11 @@ export function makeClaudeAdapterV2(
             closed,
             promptEchoMode: "unknown",
             stopping: false,
+            subagentsFromEarlierProcesses: new Set(
+              [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
+                (subagent) => subagent.task.status === "running",
+              ),
+            ),
           };
           yield* Ref.set(queryContext, context);
           yield* querySession.messages.pipe(
